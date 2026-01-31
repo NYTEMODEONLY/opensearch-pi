@@ -3,6 +3,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import SimpleSearchEngine from './simple-search.js';
+import ContextRetriever from './context.js';
 import path from 'path';
 import os from 'os';
 
@@ -150,6 +151,54 @@ program.command('embed')
   .action(async () => {
     console.log(chalk.yellow('ℹ️  Embeddings not required for this ARM64-optimized version'));
     console.log(chalk.blue('🔍 Search works using ripgrep/grep for maximum compatibility'));
+  });
+
+// Context retrieval for OpenClaw agents (token-saving)
+program.command('context')
+  .description('get smart context for a query (OpenClaw integration)')
+  .argument('[query]', 'context query (optional)')
+  .option('-w, --workspace <path>', 'workspace directory', process.cwd())
+  .option('-t, --max-tokens <num>', 'maximum tokens', '4000')
+  .option('--no-identity', 'skip identity files')
+  .option('--json', 'output as JSON')
+  .option('--raw', 'output raw content only (for piping)')
+  .action(async (query, options) => {
+    try {
+      const retriever = new ContextRetriever(options.workspace);
+      const context = await retriever.getContext(query || '', {
+        includeIdentity: options.identity !== false,
+        maxTokens: parseInt(options.maxTokens)
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(context, null, 2));
+      } else if (options.raw) {
+        console.log(retriever.formatForLLM(context));
+      } else {
+        console.log(chalk.blue('🧠 Smart Context Retrieval'));
+        console.log(chalk.dim('─'.repeat(60)));
+
+        if (context.identity) {
+          console.log(chalk.cyan('\n📝 Identity Context:'));
+          console.log(context.identity.substring(0, 500) + (context.identity.length > 500 ? '...' : ''));
+        }
+
+        if (context.relevant) {
+          console.log(chalk.cyan('\n🔍 Relevant Context:'));
+          console.log(context.relevant.substring(0, 1000) + (context.relevant.length > 1000 ? '...' : ''));
+        }
+
+        console.log(chalk.dim('\n' + '─'.repeat(60)));
+        console.log(chalk.green(`💰 Token Savings:`));
+        console.log(`   Full files would use: ~${chalk.yellow(context.savings.fullFileTokens)} tokens`);
+        console.log(`   Smart context uses:   ~${chalk.green(context.tokenEstimate)} tokens`);
+        console.log(`   ${chalk.bold.green(`Saved ${context.savings.percentSaved}%`)} (${context.savings.saved} tokens)`);
+        console.log(chalk.dim(`   Sources: ${context.sources.join(', ')}`));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:', error.message));
+      process.exit(1);
+    }
   });
 
 // Get document
