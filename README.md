@@ -36,6 +36,103 @@ opensearch vsearch "how to deploy"
 opensearch query "error handling patterns"  # Best quality - hybrid search
 ```
 
+## 🔄 Automated Setup (Recommended)
+
+For hands-free operation, set up automatic re-indexing with file watching:
+
+### 1. Install inotify-tools
+
+```bash
+# Debian/Ubuntu/Raspberry Pi OS
+sudo apt-get install -y inotify-tools
+```
+
+### 2. Create the watch script
+
+```bash
+mkdir -p ~/.openclaw/workspace/scripts
+
+cat > ~/.openclaw/workspace/scripts/opensearch-watch.sh << 'EOF'
+#!/bin/bash
+# Auto-reindex opensearch when workspace files change
+
+WORKSPACE="$HOME/.openclaw/workspace"
+INTERVAL=300  # 5 minutes fallback
+
+reindex() {
+    opensearch collection update >/dev/null 2>&1
+}
+
+# Check if inotifywait is available
+if command -v inotifywait &> /dev/null; then
+    echo "Watching $WORKSPACE for changes..."
+    while true; do
+        inotifywait -r -e modify,create,delete,move "$WORKSPACE" --exclude '\.git' -qq
+        sleep 2  # debounce
+        reindex
+    done
+else
+    echo "inotifywait not found, using periodic refresh every ${INTERVAL}s"
+    while true; do
+        sleep $INTERVAL
+        reindex
+    done
+fi
+EOF
+
+chmod +x ~/.openclaw/workspace/scripts/opensearch-watch.sh
+```
+
+### 3. Create systemd user service
+
+```bash
+mkdir -p ~/.config/systemd/user
+
+cat > ~/.config/systemd/user/opensearch-watch.service << 'EOF'
+[Unit]
+Description=OpenSearch Pi auto-reindex watcher
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.openclaw/workspace/scripts/opensearch-watch.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+EOF
+
+# Enable and start the service
+systemctl --user daemon-reload
+systemctl --user enable opensearch-watch.service
+systemctl --user start opensearch-watch.service
+
+# Verify it's running
+systemctl --user status opensearch-watch.service
+```
+
+### 4. Update your AGENTS.md (for OpenClaw)
+
+Add this to your workspace `AGENTS.md` so the agent always uses opensearch:
+
+```markdown
+### 🔍 OpenSearch Pi - ALWAYS USE THIS FOR MEMORY QUERIES
+**Before loading any memory file or using memory_search, use opensearch:**
+\`\`\`bash
+opensearch context "your query"   # Returns JSON with relevant snippets
+opensearch query "your query"     # Human-readable hybrid search
+\`\`\`
+
+**Why:** Reduces token usage by ~95%. Instead of loading 250kb of files, you get only the relevant 2kb snippets.
+
+**Auto-reindex:** A file watcher automatically re-indexes when workspace files change. No manual intervention needed.
+```
+
+Now your workspace will auto-reindex on any file change, and your agent will automatically use efficient search instead of loading full files.
+
+---
+
 ## 🔍 Search Modes
 
 | Command | Method | Use Case |
@@ -176,7 +273,7 @@ npm link
 ## 🚧 Roadmap
 
 - [ ] **ONNX Integration**: Optional pre-trained models for better embeddings
-- [ ] **Real-time Updates**: File system watchers for automatic re-indexing
+- [x] **Real-time Updates**: File system watchers for automatic re-indexing ✅
 - [ ] **Query Expansion**: LLM-powered query enhancement
 - [ ] **Clustering**: Organize similar documents
 - [ ] **Web Interface**: Simple search UI
