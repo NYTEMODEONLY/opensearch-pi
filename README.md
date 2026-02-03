@@ -10,69 +10,101 @@ ARM64-compatible hybrid search engine for markdown files, built specifically for
 - **OpenClaw Optimized**: Built for memory files, documentation, and knowledge bases
 - **Token Efficient**: Dramatically reduces API calls by finding only relevant content
 
+## 📊 Token Savings
+
+| Approach | Tokens Used | Cost |
+|----------|-------------|------|
+| Load all memory files | ~60,000 | High |
+| Built-in memory_search | ~15,000 | Medium |
+| **OpenSearch Pi** | ~2,000 | **95% savings** |
+
 ## ⚡ Quick Start
 
 ```bash
+# Clone the repo
+git clone https://github.com/NYTEMODEONLY/opensearch-pi
+cd opensearch-pi
+
 # Install dependencies
-cd opensearch
 npm install
 
 # Install globally
 npm install -g .
 
-# Or link for development
-npm link
-
-# Add your first collection
-opensearch collection add ~/Documents/notes --name "notes"
+# Add your workspace collection
 opensearch collection add ~/.openclaw/workspace --name "workspace"
 
 # Generate embeddings
 opensearch embed
 
-# Search your documents
-opensearch search "API authentication"
-opensearch vsearch "how to deploy"
-opensearch query "error handling patterns"  # Best quality - hybrid search
+# Test it
+opensearch query "your search term"
 ```
 
-## 🔄 Automated Setup (Recommended)
+## 🤖 OpenClaw Integration (IMPORTANT)
 
-For hands-free operation, set up automatic re-indexing with file watching:
+### Step 1: Block Built-in memory_search
 
-### 1. Install inotify-tools
+Add this to your `~/.openclaw/openclaw.json` to force the agent to use OpenSearch Pi instead of the built-in memory_search tool:
+
+```json
+{
+  "tools": {
+    "profile": "full",
+    "deny": [
+      "memory_search"
+    ]
+  }
+}
+```
+
+**Why this works:** The `tools.deny` array blocks specific tools from being available to agents. By blocking `memory_search`, the agent can't use the built-in (token-heavy) search and must use the `opensearch` CLI command instead.
+
+### Step 2: Add Instructions to AGENTS.md
+
+Add this to your `~/.openclaw/workspace/AGENTS.md`:
+
+```markdown
+### 🔍 OpenSearch Pi - ALWAYS USE THIS FOR MEMORY QUERIES
+
+**Before loading any memory file, use opensearch:**
+\`\`\`bash
+opensearch context "your query"   # Returns JSON with relevant snippets
+opensearch query "your query"     # Human-readable hybrid search
+\`\`\`
+
+**Why:** Reduces token usage by ~95%. Instead of loading 250kb of files, you get only the relevant 2kb snippets.
+
+**Auto-reindex:** A file watcher automatically re-indexes when workspace files change.
+```
+
+### Step 3: Set Up Auto-Reindex Service
 
 ```bash
-# Debian/Ubuntu/Raspberry Pi OS
+# Install inotify-tools
 sudo apt-get install -y inotify-tools
-```
 
-### 2. Create the watch script
-
-```bash
+# Create watch script
 mkdir -p ~/.openclaw/workspace/scripts
 
 cat > ~/.openclaw/workspace/scripts/opensearch-watch.sh << 'EOF'
 #!/bin/bash
-# Auto-reindex opensearch when workspace files change
-
 WORKSPACE="$HOME/.openclaw/workspace"
-INTERVAL=300  # 5 minutes fallback
+INTERVAL=300
 
 reindex() {
     opensearch collection update >/dev/null 2>&1
 }
 
-# Check if inotifywait is available
 if command -v inotifywait &> /dev/null; then
     echo "Watching $WORKSPACE for changes..."
     while true; do
         inotifywait -r -e modify,create,delete,move "$WORKSPACE" --exclude '\.git' -qq
-        sleep 2  # debounce
+        sleep 2
         reindex
     done
 else
-    echo "inotifywait not found, using periodic refresh every ${INTERVAL}s"
+    echo "Using periodic refresh every ${INTERVAL}s"
     while true; do
         sleep $INTERVAL
         reindex
@@ -83,7 +115,7 @@ EOF
 chmod +x ~/.openclaw/workspace/scripts/opensearch-watch.sh
 ```
 
-### 3. Create systemd user service
+### Step 4: Create systemd Service
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -103,35 +135,65 @@ RestartSec=10
 WantedBy=default.target
 EOF
 
-# Enable and start the service
 systemctl --user daemon-reload
 systemctl --user enable opensearch-watch.service
 systemctl --user start opensearch-watch.service
-
-# Verify it's running
-systemctl --user status opensearch-watch.service
 ```
 
-### 4. Update your AGENTS.md (for OpenClaw)
+### Complete OpenClaw Config Example
 
-Add this to your workspace `AGENTS.md` so the agent always uses opensearch:
+Here's a full `~/.openclaw/openclaw.json` with OpenSearch Pi + Claude Max Proxy integration:
 
-```markdown
-### 🔍 OpenSearch Pi - ALWAYS USE THIS FOR MEMORY QUERIES
-**Before loading any memory file or using memory_search, use opensearch:**
-\`\`\`bash
-opensearch context "your query"   # Returns JSON with relevant snippets
-opensearch query "your query"     # Human-readable hybrid search
-\`\`\`
-
-**Why:** Reduces token usage by ~95%. Instead of loading 250kb of files, you get only the relevant 2kb snippets.
-
-**Auto-reindex:** A file watcher automatically re-indexes when workspace files change. No manual intervention needed.
+```json
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "claude-max": {
+        "baseUrl": "http://127.0.0.1:3456/v1",
+        "apiKey": "not-needed",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "claude-opus-4",
+            "name": "Claude Opus 4.5 (via Max Proxy)",
+            "reasoning": true,
+            "contextWindow": 200000,
+            "maxTokens": 65536
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "/home/lobo/.openclaw/workspace",
+      "model": { "primary": "claude-max/claude-opus-4" },
+      "compaction": {
+        "mode": "safeguard",
+        "maxHistoryShare": 0.3,
+        "reserveTokensFloor": 50000,
+        "memoryFlush": {
+          "enabled": true,
+          "softThresholdTokens": 40000
+        }
+      },
+      "contextTokens": 60000
+    }
+  },
+  "tools": {
+    "profile": "full",
+    "exec": {
+      "timeoutSec": 300,
+      "security": "full",
+      "ask": "off"
+    },
+    "deny": [
+      "memory_search"
+    ]
+  }
+}
 ```
-
-Now your workspace will auto-reindex on any file change, and your agent will automatically use efficient search instead of loading full files.
-
----
 
 ## 🔍 Search Modes
 
@@ -140,13 +202,14 @@ Now your workspace will auto-reindex on any file change, and your agent will aut
 | `search` | BM25 full-text | Fast keyword search, exact matches |
 | `vsearch` | Vector semantic | Conceptual search, similar meanings |
 | `query` | Hybrid fusion | Best quality, combines both approaches |
+| `context` | Smart retrieval | Best for agents, returns JSON |
 
 ## 📚 Collection Management
 
 ```bash
 # Add collections
 opensearch collection add ~/notes --name "personal" --mask "**/*.md"
-opensearch collection add ~/work/docs --name "work"
+opensearch collection add ~/.openclaw/workspace --name "workspace"
 
 # List collections
 opensearch collection list
@@ -158,128 +221,23 @@ opensearch collection update
 opensearch collection remove personal
 ```
 
-## 🔧 Advanced Usage
-
-### Search Options
+## 🔧 Search Commands
 
 ```bash
-# Limit results
-opensearch query "machine learning" -n 10
+# Keyword search
+opensearch search "API authentication" -n 5
 
-# Search specific collection
-opensearch search "bug" -c work
+# Semantic search
+opensearch vsearch "how to deploy" --min-score 0.5
 
-# Filter by score threshold
-opensearch vsearch "deployment" --min-score 0.5
+# Hybrid search (recommended)
+opensearch query "error handling" --json
 
-# JSON output for scripts/agents
-opensearch query "authentication" --json
+# Smart context for agents
+opensearch context "user preferences" --raw
 ```
 
-### Document Retrieval
-
-```bash
-# Get document by path
-opensearch get notes/meeting-2024-01-15.md
-
-# Get by document ID (from search results)
-opensearch get "#abc12345"
-
-# Limit lines returned
-opensearch get notes/long-doc.md -l 50 --from 100
-```
-
-## 🤖 OpenClaw Integration
-
-Create a skill to use OpenSearch for efficient memory recall:
-
-```javascript
-// In your OpenClaw skill
-async function smartMemorySearch(query, options = {}) {
-  const { exec } = require('child_process');
-  const { promisify } = require('util');
-  const execAsync = promisify(exec);
-  
-  const cmd = `opensearch query "${query}" --json --min-score 0.3`;
-  const { stdout } = await execAsync(cmd);
-  const results = JSON.parse(stdout);
-  
-  // Return only relevant snippets instead of full files
-  return results.map(r => ({
-    source: r.path,
-    content: r.snippet,
-    score: r.score
-  }));
-}
-```
-
-## 📊 Performance & Token Savings
-
-**Before OpenSearch:**
-```
-User: "What did we decide about API versioning?"
-Agent loads: MEMORY.md (50kb) + memory/2024-*.md (200kb) = 250kb context
-Token cost: ~60,000 tokens
-```
-
-**After OpenSearch:**
-```
-User: "What did we decide about API versioning?"
-OpenSearch finds: 3 relevant snippets (2kb total)
-Token cost: ~500 tokens (95% reduction!)
-```
-
-## 🏗️ Architecture
-
-OpenSearch Pi uses a multi-layered approach:
-
-1. **BM25 Search**: SQLite FTS5 for fast keyword matching
-2. **Vector Search**: Lightweight embeddings using TF-IDF + feature engineering
-3. **Hybrid Fusion**: Reciprocal Rank Fusion (RRF) combines both results
-4. **Smart Scoring**: Position-aware blending preserves exact matches
-
-### Embedding Strategy
-
-Instead of heavy transformer models, OpenSearch Pi uses:
-- **TF-IDF features**: Capture keyword importance
-- **N-gram features**: Understand phrase patterns  
-- **Character features**: Detect document structure
-- **Semantic features**: Simple linguistic patterns
-
-Result: 384-dimensional vectors that work well on ARM64 with minimal compute.
-
-## 🗃️ Data Storage
-
-- **Database**: `~/.cache/opensearch/index.db` (SQLite)
-- **Collections**: Defined paths with glob patterns
-- **Embeddings**: Stored as JSON vectors in database
-- **FTS Index**: Automatic full-text search index
-
-## 🛠️ Development
-
-```bash
-# Clone and setup
-git clone https://github.com/NYTEMODE/opensearch-pi.git
-cd opensearch-pi
-npm install
-
-# Run tests
-npm test
-
-# Development mode
-npm link
-```
-
-## 🚧 Roadmap
-
-- [ ] **ONNX Integration**: Optional pre-trained models for better embeddings
-- [x] **Real-time Updates**: File system watchers for automatic re-indexing ✅
-- [ ] **Query Expansion**: LLM-powered query enhancement
-- [ ] **Clustering**: Organize similar documents
-- [ ] **Web Interface**: Simple search UI
-- [ ] **OpenClaw Plugin**: Native integration
-
-## 📈 Benchmarks
+## 📈 Performance
 
 Tested on **Raspberry Pi 4 (4GB)**:
 
@@ -290,25 +248,32 @@ Tested on **Raspberry Pi 4 (4GB)**:
 | Vector search | 200ms | 50MB |
 | Hybrid search | 300ms | 60MB |
 
-## 🤝 Contributing
+## 🏗️ Architecture
 
-Built for the OpenClaw community! Contributions welcome:
+OpenSearch Pi uses a multi-layered approach:
 
-1. Fork the repo
-2. Create feature branch
-3. Add tests for new features
-4. Submit pull request
+1. **BM25 Search**: SQLite FTS5 for fast keyword matching
+2. **Vector Search**: Lightweight TF-IDF embeddings (no heavy transformers)
+3. **Hybrid Fusion**: Reciprocal Rank Fusion (RRF) combines both results
+4. **384-dim Vectors**: Efficient on ARM64 with minimal compute
+
+## 🗃️ Data Storage
+
+- **Database**: `~/.cache/opensearch/index.db` (SQLite)
+- **Collections**: Defined paths with glob patterns
+- **Embeddings**: JSON vectors stored in database
+
+## 🔗 Related Projects
+
+- [Claude Max Proxy](https://github.com/NYTEMODEONLY/claude-max-proxy) - Use Claude Max subscription with OpenClaw
+- [OpenClaw](https://github.com/openclaw) - The AI agent framework
 
 ## 📄 License
 
-MIT License - see LICENSE file for details.
-
-## 🙏 Acknowledgments
-
-Inspired by QMD's hybrid search approach, adapted for ARM64 compatibility and OpenClaw integration.
+MIT License
 
 ---
 
 **Built with ❤️ for the OpenClaw community**
 
-*a nytemode project*
+*a [NYTEMODE](https://github.com/NYTEMODEONLY) project*
